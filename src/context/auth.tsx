@@ -1,5 +1,4 @@
 import { useRouter } from 'expo-router';
-import * as SecureStore from 'expo-secure-store';
 import {
   createContext,
   useCallback,
@@ -11,6 +10,7 @@ import {
 } from 'react';
 
 import { apiGet, apiPost, isApiError, type User } from '@/lib/api';
+import { tokenStore } from '@/lib/token-store';
 
 const TOKEN_KEY = 'veresiye.access_token';
 
@@ -37,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
     (async () => {
-      const stored = await SecureStore.getItemAsync(TOKEN_KEY);
+      const stored = await tokenStore.get(TOKEN_KEY);
       if (!stored) {
         if (active) setLoading(false);
         return;
@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         // Stored token is stale/invalid — drop it and stay logged out.
         if (isApiError(err) && err.status === 401) {
-          await SecureStore.deleteItemAsync(TOKEN_KEY);
+          await tokenStore.remove(TOKEN_KEY);
         }
       } finally {
         if (active) setLoading(false);
@@ -68,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password,
       remember,
     });
-    await SecureStore.setItemAsync(TOKEN_KEY, data.access);
+    await tokenStore.set(TOKEN_KEY, data.access);
     const me = await apiGet<User>('/auth/me/', data.access);
     setToken(data.access);
     setUser(me);
@@ -78,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const current = token;
     setUser(null);
     setToken(null);
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    await tokenStore.remove(TOKEN_KEY);
     if (current) apiPost('/auth/logout/', {}, current).catch(() => {});
   }, [token]);
 

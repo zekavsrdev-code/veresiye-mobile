@@ -43,16 +43,73 @@ export interface Membership {
   joined_at: string;
 }
 
-// ─── Example app (notes) — replace with your own domain ─────────────────────────
+// ─── Ledger (veresiye defteri) ──────────────────────────────────────────────────
+// Mirrors backend/ledger/serializers.py exactly. Money fields are decimal STRINGS.
 
-export interface Note {
+// Cursor-following: apiGet already accepts absolute URLs, so the next page is
+// simply apiGet(page.next) — no dedicated pagination helper needed.
+export interface Paginated<T> {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: T[];
+}
+
+export interface Customer {
   id: string;
   tenant: string;
-  title: string;
-  body: string;
-  created_by: string | null;
+  name: string;
+  phone: string;
+  balance: string; // computed server-side, 2dp decimal string; >0 = customer owes shop
+  has_dispute: boolean;
+  last_transaction_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface LedgerTransaction {
+  id: string;
+  tenant: string;
+  customer: string;
+  type: 'borc' | 'odeme';
+  amount: string;
+  note: string;
+  created_at: string;
+}
+
+export interface CustomerTotals {
+  total_receivable: string;
+}
+
+export interface StatementResponseInfo {
+  decision: 'approve' | 'dispute';
+  note: string;
+  created_at: string;
+}
+
+export interface StatementLinkInfo {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  access_count: number;
+  last_accessed_at: string | null;
+  is_active: boolean;
+  response: StatementResponseInfo | null;
+}
+
+export interface SendStatementResp {
+  job_id: string;
+}
+
+export interface RevokeResp {
+  revoked: number;
+}
+
+export interface MyPermissions {
+  is_owner: boolean;
+  can_grant: boolean;
+  codenames: string[];
 }
 
 // ─── Error types ────────────────────────────────────────────────────────────────
