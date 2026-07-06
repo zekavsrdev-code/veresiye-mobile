@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight } from 'lucide-react-native';
+import { ArrowDownLeft, ArrowUpRight, Paperclip } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import { memo } from 'react';
 import { Pressable, Text, View } from 'react-native';
@@ -42,9 +42,11 @@ export interface TxRowProps {
   tx: LedgerTransaction;
   runningBalance?: string;
   onLongPress?: (tx: LedgerTransaction) => void;
+  /** Outbox states: 'pending' = queued for sync, 'failed' = server rejected. */
+  syncState?: 'pending' | 'failed';
 }
 
-function TxRowInner({ tx, runningBalance, onLongPress }: TxRowProps) {
+function TxRowInner({ tx, runningBalance, onLongPress, syncState }: TxRowProps) {
   const { t, lang } = useLang();
   const { colorScheme } = useColorScheme();
 
@@ -58,8 +60,14 @@ function TxRowInner({ tx, runningBalance, onLongPress }: TxRowProps) {
     runningBalance !== undefined
       ? `${t('ledger_running_balance')}: ${formatTRY(runningBalance)}`
       : undefined;
+  const syncCaption =
+    syncState === 'pending'
+      ? t('ledger_sync_pending')
+      : syncState === 'failed'
+        ? t('ledger_sync_failed')
+        : undefined;
 
-  const a11yLabel = [typeLabel, signedAmount, tx.note, time, balanceCaption]
+  const a11yLabel = [typeLabel, signedAmount, tx.note, time, balanceCaption, syncCaption]
     .filter(Boolean)
     .join(', ');
 
@@ -70,7 +78,9 @@ function TxRowInner({ tx, runningBalance, onLongPress }: TxRowProps) {
       onLongPress={onLongPress ? () => onLongPress(tx) : undefined}
       // Snappier storno affordance — the default 500ms hold reads as "broken".
       delayLongPress={350}
-      className="min-h-11 flex-row items-center gap-3 px-4 py-3 active:bg-gray-50 dark:active:bg-gray-800"
+      className={`min-h-11 flex-row items-center gap-3 px-4 py-3 active:bg-gray-50 dark:active:bg-gray-800 ${
+        syncState === 'pending' ? 'opacity-60' : ''
+      }`}
     >
       <View className={`h-10 w-10 items-center justify-center rounded-full ${cfg.bgCls}`}>
         <cfg.Icon size={18} color={iconColor} />
@@ -80,7 +90,29 @@ function TxRowInner({ tx, runningBalance, onLongPress }: TxRowProps) {
         <Text className={`text-base ${text.primary}`} numberOfLines={1}>
           {title}
         </Text>
-        <Text className={`text-sm ${text.muted}`}>{time}</Text>
+        <View className="flex-row items-center gap-2">
+          <Text className={`text-sm ${text.muted}`}>{time}</Text>
+          {tx.attachments?.length ? (
+            <Paperclip size={12} color={colorScheme === 'dark' ? '#9ca3af' : '#6b7280'} />
+          ) : null}
+          {syncCaption ? (
+            <View
+              className={`rounded-full px-2 py-0.5 ${
+                syncState === 'failed' ? badge.rose : badge.gray
+              }`}
+            >
+              <Text
+                className={`text-xs font-medium ${
+                  syncState === 'failed'
+                    ? 'text-rose-700 dark:text-rose-300'
+                    : 'text-gray-600 dark:text-gray-300'
+                }`}
+              >
+                {syncCaption}
+              </Text>
+            </View>
+          ) : null}
+        </View>
       </View>
 
       <View className="items-end gap-0.5">

@@ -1,11 +1,33 @@
 // Customer detail — hero balance + append-only running ledger. Corrections go
 // through storno (long-press → reverse entry), never edit/delete.
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { History, MoreVertical, Phone, Send, Undo2 } from 'lucide-react-native';
+import {
+  BellRing,
+  Camera,
+  FileDown,
+  History,
+  Images,
+  MoreVertical,
+  Pencil,
+  Phone,
+  Send,
+  Undo2,
+  X,
+} from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  ActivityIndicator,
+  Image,
+  Linking,
+  Modal,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BalanceBadge } from '@/components/BalanceBadge';
 import { Button } from '@/components/Button';
@@ -21,9 +43,14 @@ import { useAuth, useRequireAuth } from '@/context/auth';
 import { useLang } from '@/context/lang';
 import { useTenant } from '@/context/tenant';
 import { useToast } from '@/context/toast';
+import { usePendingTransactions } from '@/hooks/useOutbox';
 import { usePermissions } from '@/hooks/usePermissions';
+import { flushOutbox, removeOutboxEntry } from '@/lib/outbox';
 import {
   apiGet,
+  apiPost,
+  apiUpload,
+  apiUrl,
   getErrorMessage,
   unwrapList,
   type Customer,
@@ -33,14 +60,17 @@ import {
 import { relativeDate } from '@/lib/dates';
 import { haptics } from '@/lib/haptics';
 import { fromCents, toCents } from '@/lib/money';
+import { pickFromCamera, pickFromGallery, type PickedPhoto } from '@/lib/photo-picker';
+import { downloadAndShare } from '@/lib/share-file';
 import { badge, surface, text } from '@/lib/ui-tokens';
 
 type Status = 'loading' | 'error' | 'success';
 
 interface DetailRow {
   tx: LedgerTransaction;
-  runningBalance: string;
+  runningBalance?: string;
   dateHeader: string | null;
+  syncState?: 'pending' | 'failed';
 }
 
 const dayOf = (iso: string) => iso.slice(0, 10);
@@ -52,6 +82,7 @@ export default function CustomerDetailScreen() {
   const { token } = useAuth();
   const { hasPerm } = usePermissions();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const { colorScheme } = useColorScheme();
   const params = useLocalSearchParams<{ id: string }>();
   const id = params.id;
@@ -66,6 +97,7 @@ export default function CustomerDetailScreen() {
   const [selectedTx, setSelectedTx] = useState<LedgerTransaction | null>(null);
   const hasLoadedRef = useRef(false);
   const toast = useToast();
+  const pendingEntries = usePendingTransactions(id);
 
   const menuSheetRef = useSheetRef();
   const txSheetRef = useSheetRef();
@@ -105,6 +137,7 @@ export default function CustomerDetailScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!token) return;
+      void flushOutbox(); // reentering the screen is a natural sync moment
       if (!hasLoadedRef.current) {
         hasLoadedRef.current = true;
         refetch();
@@ -155,7 +188,7 @@ export default function CustomerDetailScreen() {
       acc += (tx.type === 'borc' ? 1 : -1) * toCents(tx.amount);
       running[i] = fromCents(acc);
     }
-    return txs.map((tx, i) => {
+    const serverRows = txs.map((tx, i) => {
       const prev = i > 0 ? txs[i - 1] : null;
       const dateHeader =
         !prev || dayOf(prev.created_at) !== dayOf(tx.created_at)
@@ -163,7 +196,25 @@ export default function CustomerDetailScreen() {
           : null;
       return { tx, runningBalance: running[i], dateHeader };
     });
-  }, [txs, lang]);
+    // Optimistic UI: queued (offline) entries render on top with a sync badge
+    // and no running balance — the server stays the balance source of truth.
+    const pendingRows: DetailRow[] = pendingEntries.map((entry) => ({
+      tx: {
+        id: entry.key,
+        tenant: entry.tenant,
+        customer: entry.customer,
+        type: entry.type,
+        amount: entry.amount,
+        note: entry.note,
+        due_date: entry.due_date ?? null,
+        attachments: [],
+        created_at: entry.queuedAt,
+      } as LedgerTransaction,
+      dateHeader: null,
+      syncState: entry.failedError ? 'failed' : 'pending',
+    }));
+    return [...pendingRows, ...serverRows];
+  }, [txs, lang, pendingEntries]);
 
   const handleLongPress = useCallback(
     (tx: LedgerTransaction) => {
@@ -174,6 +225,18 @@ export default function CustomerDetailScreen() {
     [txSheetRef],
   );
 
+  // A failed (permanently rejected) queued entry is removable by long-press —
+  // never silently dropped. Still-pending entries have no actions.
+  const removeFailedEntry = useCallback(
+    (tx: LedgerTransaction) => {
+      haptics.warning();
+      void removeOutboxEntry(tx.id).then(() => {
+        toast.show({ message: t('ledger_sync_removed'), intent: 'success' });
+      });
+    },
+    [toast, t],
+  );
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<DetailRow>) => (
       <View>
@@ -182,10 +245,21 @@ export default function CustomerDetailScreen() {
             {item.dateHeader}
           </Text>
         )}
-        <TxRow tx={item.tx} runningBalance={item.runningBalance} onLongPress={handleLongPress} />
+        <TxRow
+          tx={item.tx}
+          runningBalance={item.runningBalance}
+          syncState={item.syncState}
+          onLongPress={
+            item.syncState === 'failed'
+              ? removeFailedEntry
+              : item.syncState === 'pending'
+                ? undefined
+                : handleLongPress
+          }
+        />
       </View>
     ),
-    [handleLongPress],
+    [handleLongPress, removeFailedEntry],
   );
 
   const keyExtractor = useCallback((item: DetailRow) => item.tx.id, []);
@@ -201,6 +275,79 @@ export default function CustomerDetailScreen() {
     dismissSheet(menuSheetRef);
     router.push(`/customer/${id}/statement`);
   }, [menuSheetRef, id]);
+
+  const openEdit = useCallback(() => {
+    dismissSheet(menuSheetRef);
+    router.push(`/customer/${id}/edit`);
+  }, [menuSheetRef, id]);
+
+  const sendReminder = useCallback(() => {
+    dismissSheet(menuSheetRef);
+    apiPost(`/customers/${id}/send-reminder/`, {}, token ?? undefined)
+      .then(() => {
+        haptics.success();
+        toast.show({ message: t('ledger_reminder_sent'), intent: 'success' });
+      })
+      .catch((err: unknown) => {
+        haptics.error();
+        toast.show({ message: getErrorMessage(err, t), intent: 'error' });
+      });
+  }, [menuSheetRef, id, token, toast, t]);
+
+  const shareExport = useCallback(
+    (kind: 'csv' | 'pdf') => {
+      dismissSheet(menuSheetRef);
+      if (!token) return;
+      toast.show({ message: t('share_preparing'), intent: 'success' });
+      const url = apiUrl(`/customers/${id}/export/${kind === 'pdf' ? '?as=pdf' : ''}`);
+      void downloadAndShare(url, token, `statement-${id}.${kind}`).then((ok) => {
+        if (!ok) {
+          haptics.error();
+          toast.show({ message: t('share_export_error'), intent: 'error' });
+        }
+      });
+    },
+    [menuSheetRef, id, token, toast, t],
+  );
+
+  const attachReceipt = useCallback(
+    (source: 'camera' | 'gallery') => {
+      const tx = selectedTx;
+      dismissSheet(txSheetRef);
+      if (!tx || !token) return;
+      const pick = source === 'camera' ? pickFromCamera : pickFromGallery;
+      void pick().then(async (photo: PickedPhoto | null) => {
+        if (!photo) return; // cancelled, denied, or module missing (guarded lib warns)
+        const form = new FormData();
+        // RN FormData file part: {uri, name, type} object, not a Blob.
+        form.append('image', {
+          uri: photo.uri,
+          name: photo.fileName,
+          type: photo.mimeType,
+        } as unknown as Blob);
+        try {
+          await apiUpload(`/transactions/${tx.id}/attachments/`, form, token);
+          haptics.success();
+          toast.show({ message: t('photo_uploaded'), intent: 'success' });
+          void load().then(() => setStatus('success'));
+        } catch (err) {
+          haptics.error();
+          toast.show({ message: getErrorMessage(err, t), intent: 'error' });
+        }
+      });
+    },
+    [selectedTx, txSheetRef, token, toast, t, load],
+  );
+
+  const [photoViewer, setPhotoViewer] = useState<string[] | null>(null);
+
+  const viewReceipts = useCallback(() => {
+    const tx = selectedTx;
+    dismissSheet(txSheetRef);
+    if (tx?.attachments?.length) {
+      setPhotoViewer(tx.attachments.map((a) => a.image));
+    }
+  }, [selectedTx, txSheetRef]);
 
   const reverseSelectedTx = useCallback(() => {
     if (!selectedTx) return;
@@ -222,6 +369,11 @@ export default function CustomerDetailScreen() {
   void activeTenant;
 
   const canSendStatement = hasPerm('ledger.send_statement');
+  const canEditCustomer = hasPerm('ledger.add_customer');
+  const canViewTransactions = hasPerm('ledger.view_transaction');
+  const canSendReminder =
+    hasPerm('ledger.send_reminder') && !!customer?.phone && toCents(customer.balance) > 0;
+  const hasMenu = canSendStatement || canEditCustomer || canSendReminder;
 
   const heroHeader = customer ? (
     <View className="px-4 pb-2 pt-2">
@@ -232,6 +384,14 @@ export default function CustomerDetailScreen() {
             <View className={`rounded-full px-3 py-1 ${badge.rose}`}>
               <Text className="text-xs font-semibold text-rose-700 dark:text-rose-300">
                 {t('ledger_dispute_badge')}
+              </Text>
+            </View>
+          ) : null}
+          {customer.has_overdue ? (
+            <View className={`flex-row items-center gap-1 rounded-full px-3 py-1 ${badge.amber}`}>
+              <BellRing size={12} color={isDark ? '#fcd34d' : '#b45309'} />
+              <Text className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                {t('ledger_overdue_badge')}
               </Text>
             </View>
           ) : null}
@@ -259,11 +419,11 @@ export default function CustomerDetailScreen() {
         title={customer?.name ?? ''}
         onBack={() => router.back()}
         right={
-          canSendStatement ? (
+          hasMenu ? (
             <IconButton
               icon={<MoreVertical size={22} color={headerIconColor} />}
               onPress={() => presentSheet(menuSheetRef)}
-              accessibilityLabel={t('ledger_send_statement')}
+              accessibilityLabel={t('ledger_customer_menu')}
             />
           ) : undefined
         }
@@ -332,32 +492,81 @@ export default function CustomerDetailScreen() {
         </View>
       </View>
 
-      {/* Overflow menu (statement send is permission-gated at the header). */}
-      <Sheet ref={menuSheetRef} snapPoints={['25%']}>
+      {/* Overflow menu — each item permission-gated on its own codename. */}
+      <Sheet ref={menuSheetRef} snapPoints={['35%']}>
         <BottomSheetView className="gap-1 px-4 pb-8">
-          <Pressable
-            onPress={openStatement}
-            accessibilityRole="button"
-            accessibilityLabel={t('ledger_send_statement')}
-            className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
-          >
-            <Send size={20} color={mutedIconColor} />
-            <Text className={`text-base ${text.primary}`}>{t('ledger_send_statement')}</Text>
-          </Pressable>
-          <Pressable
-            onPress={openStatement}
-            accessibilityRole="button"
-            accessibilityLabel={t('ledger_link_history')}
-            className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
-          >
-            <History size={20} color={mutedIconColor} />
-            <Text className={`text-base ${text.primary}`}>{t('ledger_link_history')}</Text>
-          </Pressable>
+          {canEditCustomer ? (
+            <Pressable
+              onPress={openEdit}
+              accessibilityRole="button"
+              accessibilityLabel={t('ledger_edit_customer')}
+              className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+            >
+              <Pencil size={20} color={mutedIconColor} />
+              <Text className={`text-base ${text.primary}`}>{t('ledger_edit_customer')}</Text>
+            </Pressable>
+          ) : null}
+          {canSendReminder ? (
+            <Pressable
+              onPress={sendReminder}
+              accessibilityRole="button"
+              accessibilityLabel={t('ledger_send_reminder')}
+              className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+            >
+              <BellRing size={20} color={mutedIconColor} />
+              <Text className={`text-base ${text.primary}`}>{t('ledger_send_reminder')}</Text>
+            </Pressable>
+          ) : null}
+          {canSendStatement ? (
+            <>
+              <Pressable
+                onPress={openStatement}
+                accessibilityRole="button"
+                accessibilityLabel={t('ledger_send_statement')}
+                className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+              >
+                <Send size={20} color={mutedIconColor} />
+                <Text className={`text-base ${text.primary}`}>{t('ledger_send_statement')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={openStatement}
+                accessibilityRole="button"
+                accessibilityLabel={t('ledger_link_history')}
+                className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+              >
+                <History size={20} color={mutedIconColor} />
+                <Text className={`text-base ${text.primary}`}>{t('ledger_link_history')}</Text>
+              </Pressable>
+            </>
+          ) : null}
+          {canViewTransactions ? (
+            <>
+              <Pressable
+                onPress={() => shareExport('pdf')}
+                accessibilityRole="button"
+                accessibilityLabel={t('share_export_pdf')}
+                className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+              >
+                <FileDown size={20} color={mutedIconColor} />
+                <Text className={`text-base ${text.primary}`}>{t('share_export_pdf')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => shareExport('csv')}
+                accessibilityRole="button"
+                accessibilityLabel={t('share_export_csv')}
+                className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+              >
+                <FileDown size={20} color={mutedIconColor} />
+                <Text className={`text-base ${text.primary}`}>{t('share_export_csv')}</Text>
+              </Pressable>
+            </>
+          ) : null}
         </BottomSheetView>
       </Sheet>
 
-      {/* Long-press menu: storno is the ONLY correction path (append-only ledger). */}
-      <Sheet ref={txSheetRef} snapPoints={['25%']} onDismiss={() => setSelectedTx(null)}>
+      {/* Long-press menu: storno is the ONLY correction path (append-only
+          ledger); receipts are additive evidence, never edits. */}
+      <Sheet ref={txSheetRef} snapPoints={['40%']} onDismiss={() => setSelectedTx(null)}>
         <BottomSheetView className="gap-1 px-4 pb-8">
           <Pressable
             onPress={reverseSelectedTx}
@@ -368,8 +577,67 @@ export default function CustomerDetailScreen() {
             <Undo2 size={20} color={mutedIconColor} />
             <Text className={`text-base ${text.primary}`}>{t('ledger_tx_reverse')}</Text>
           </Pressable>
+          <Pressable
+            onPress={() => attachReceipt('camera')}
+            accessibilityRole="button"
+            accessibilityLabel={t('photo_camera')}
+            className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+          >
+            <Camera size={20} color={mutedIconColor} />
+            <Text className={`text-base ${text.primary}`}>{t('photo_camera')}</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => attachReceipt('gallery')}
+            accessibilityRole="button"
+            accessibilityLabel={t('photo_gallery')}
+            className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+          >
+            <Images size={20} color={mutedIconColor} />
+            <Text className={`text-base ${text.primary}`}>{t('photo_gallery')}</Text>
+          </Pressable>
+          {selectedTx?.attachments?.length ? (
+            <Pressable
+              onPress={viewReceipts}
+              accessibilityRole="button"
+              accessibilityLabel={t('photo_view')}
+              className="min-h-12 flex-row items-center gap-3 rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+            >
+              <Images size={20} color={mutedIconColor} />
+              <Text className={`text-base ${text.primary}`}>
+                {`${t('photo_view')} (${selectedTx.attachments.length})`}
+              </Text>
+            </Pressable>
+          ) : null}
         </BottomSheetView>
       </Sheet>
+
+      {/* Receipt viewer — plain full-screen swipe-through, nothing fancy. */}
+      <Modal
+        visible={photoViewer !== null}
+        animationType="fade"
+        onRequestClose={() => setPhotoViewer(null)}
+      >
+        <SafeAreaView className="flex-1 bg-black">
+          <View className="flex-row justify-end px-4 py-2">
+            <IconButton
+              icon={<X size={26} color="#ffffff" />}
+              onPress={() => setPhotoViewer(null)}
+              accessibilityLabel={t('cancel')}
+            />
+          </View>
+          <ScrollView horizontal pagingEnabled>
+            {(photoViewer ?? []).map((uri) => (
+              <Image
+                key={uri}
+                source={{ uri }}
+                resizeMode="contain"
+                style={{ width: windowWidth, height: '100%' }}
+                accessibilityLabel={t('photo_view')}
+              />
+            ))}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </View>
   );
 }

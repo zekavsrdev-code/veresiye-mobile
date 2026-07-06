@@ -6,11 +6,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/context/auth';
 import { useLang } from '@/context/lang';
 import { getErrorMessage } from '@/lib/api';
+import { useSystemConfig } from '@/hooks/useSystemConfig';
 
 export default function LoginScreen() {
   const { login, user, loading } = useAuth();
   const { t } = useLang();
   const router = useRouter();
+  const config = useSystemConfig();
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -89,6 +91,18 @@ export default function LoginScreen() {
             <Text className="font-medium text-white">{t('login_btn')}</Text>
           )}
         </Pressable>
+
+        {config?.allow_public_registration ? (
+          <Pressable
+            onPress={() => router.push('/register')}
+            className="h-11 items-center justify-center"
+            accessibilityRole="link"
+          >
+            <Text className="text-sm font-medium text-blue-600 dark:text-blue-400">
+              {t('login_register_link')}
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </SafeAreaView>
   );

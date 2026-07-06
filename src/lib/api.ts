@@ -62,6 +62,7 @@ export interface Customer {
   phone: string;
   balance: string; // computed server-side, 2dp decimal string; >0 = customer owes shop
   has_dispute: boolean;
+  has_overdue: boolean;
   last_transaction_at: string | null;
   created_at: string;
   updated_at: string;
@@ -74,7 +75,48 @@ export interface LedgerTransaction {
   type: 'borc' | 'odeme';
   amount: string;
   note: string;
+  due_date: string | null; // YYYY-MM-DD; debts only
+  attachments: { id: string; image: string; created_at: string }[];
   created_at: string;
+}
+
+export interface AgingBuckets {
+  current: string;
+  d1_30: string;
+  d31_60: string;
+  d61_90: string;
+  d90_plus: string;
+}
+
+export interface AgingReport {
+  buckets: AgingBuckets;
+  total_overdue: string;
+  customers: {
+    id: string;
+    name: string;
+    overdue_total: string;
+    buckets: AgingBuckets;
+  }[];
+}
+
+export interface PeriodSums {
+  borc: string;
+  odeme: string;
+}
+
+export interface TenantStats {
+  periods: { today: PeriodSums; week: PeriodSums; month: PeriodSums };
+  customer_count: number;
+  debtor_count: number;
+  total_receivable: string;
+  total_overdue: string;
+}
+
+export interface SystemConfig {
+  deployment_mode: 'saas' | 'onpremise';
+  is_saas: boolean;
+  is_onpremise: boolean;
+  allow_public_registration: boolean;
 }
 
 export interface CustomerTotals {
@@ -137,6 +179,18 @@ export function isApiError(err: unknown): err is ApiError {
   return err instanceof ApiError;
 }
 
+// ─── Global 401 hook ────────────────────────────────────────────────────────────
+// A mid-session 401 means the stored token died (expiry, server-side revoke).
+// AuthProvider registers a handler that clears the session and lands on /login;
+// /auth/* is exempt (a login 401 is "wrong password", not "session expired").
+
+type UnauthorizedHandler = () => void;
+let onUnauthorized: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  onUnauthorized = handler;
+}
+
 export function getErrorMessage<K extends string>(err: unknown, t: (key: K) => string): string {
   if (!isApiError(err)) {
     return err instanceof Error ? err.message : String(err);
@@ -153,6 +207,12 @@ export function getErrorMessage<K extends string>(err: unknown, t: (key: K) => s
 
 // ─── Internal helpers ───────────────────────────────────────────────────────────
 
+/** Resolves a relative API path to an absolute URL — used where a plain fetch
+ * (e.g. an authenticated file download) needs the same base URL as apiGet/etc. */
+export function apiUrl(path: string): string {
+  return path.startsWith('http') ? path : `${BASE_URL}${path}`;
+}
+
 function buildHeaders(token?: string, isJson = true): Record<string, string> {
   const headers: Record<string, string> = {};
   if (isJson) headers['Content-Type'] = 'application/json';
@@ -162,6 +222,9 @@ function buildHeaders(token?: string, isJson = true): Record<string, string> {
 
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
+    if (res.status === 401 && !res.url.includes('/auth/')) {
+      onUnauthorized?.();
+    }
     let code = 'error';
     let detail = `HTTP ${res.status}`;
     let errors: Record<string, string[]> | null = null;
@@ -194,7 +257,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
 // ─── API functions ──────────────────────────────────────────────────────────────
 
 export async function apiGet<T>(path: string, token?: string): Promise<T> {
-  const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
+  const url = apiUrl(path);
   let res: Response;
   try {
     res = await fetch(url, { method: 'GET', headers: buildHeaders(token, false) });
@@ -205,7 +268,7 @@ export async function apiGet<T>(path: string, token?: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
+  const url = apiUrl(path);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -220,7 +283,7 @@ export async function apiPost<T>(path: string, body: unknown, token?: string): P
 }
 
 export async function apiPut<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
+  const url = apiUrl(path);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -235,7 +298,7 @@ export async function apiPut<T>(path: string, body: unknown, token?: string): Pr
 }
 
 export async function apiPatch<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
+  const url = apiUrl(path);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -249,15 +312,37 @@ export async function apiPatch<T>(path: string, body: unknown, token?: string): 
   return handleResponse<T>(res);
 }
 
-export async function apiDelete(path: string, token?: string): Promise<void> {
-  const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
+export async function apiDelete(path: string, token?: string, body?: unknown): Promise<void> {
+  const url = apiUrl(path);
   let res: Response;
   try {
-    res = await fetch(url, { method: 'DELETE', headers: buildHeaders(token, false) });
+    res = await fetch(url, {
+      method: 'DELETE',
+      headers: buildHeaders(token, body !== undefined),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
   } catch {
     throw new ApiError(0, 'network_error', 'network_error');
   }
   return handleResponse<void>(res);
+}
+
+// ─── Multipart upload ───────────────────────────────────────────────────────────
+// Separate from apiPost: a JSON Content-Type header would break the multipart
+// boundary fetch sets automatically, so this path never calls buildHeaders(true).
+export async function apiUpload<T>(path: string, form: FormData, token?: string): Promise<T> {
+  const url = apiUrl(path);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: buildHeaders(token, false),
+      body: form,
+    });
+  } catch {
+    throw new ApiError(0, 'network_error', 'network_error');
+  }
+  return handleResponse<T>(res);
 }
 
 // ─── List unwrapper ─────────────────────────────────────────────────────────────

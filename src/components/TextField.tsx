@@ -7,6 +7,7 @@ import {
   TextInput,
   View,
   type KeyboardTypeOptions,
+  type TextInputProps,
 } from 'react-native';
 import { useColorScheme } from 'nativewind';
 import { inputCls, text } from '@/lib/ui-tokens';
@@ -21,6 +22,9 @@ export interface TextFieldProps {
   autoFocus?: boolean;
   secureTextEntry?: boolean;
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  autoCorrect?: boolean;
+  // Drives OS autofill (username/password managers) on auth forms.
+  textContentType?: TextInputProps['textContentType'];
   testID?: string;
 }
 
@@ -34,6 +38,8 @@ export function TextField({
   autoFocus,
   secureTextEntry,
   autoCapitalize,
+  autoCorrect,
+  textContentType,
   testID,
 }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
@@ -66,6 +72,8 @@ export function TextField({
         autoFocus={autoFocus}
         secureTextEntry={secureTextEntry}
         autoCapitalize={autoCapitalize}
+        autoCorrect={autoCorrect}
+        textContentType={textContentType}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         accessibilityLabel={label}

@@ -25,3 +25,19 @@ export function relativeDate(iso: string, lang: Lang): string {
 export function timeOfDay(iso: string, lang: Lang): string {
   return new Intl.DateTimeFormat(lang, { hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
 }
+
+// Local-timezone YYYY-MM-DD, `days` from today — due-date chips send this to the
+// API (a UTC toISOString() slice would shift the day across midnight in TR).
+export function addDaysLocalISO(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Short localized display for a YYYY-MM-DD due date.
+export function formatDueDate(isoDate: string, lang: Lang): string {
+  const [y, m, day] = isoDate.split('-').map(Number);
+  return new Intl.DateTimeFormat(lang, { day: 'numeric', month: 'short', year: 'numeric' })
+    .format(new Date(y, m - 1, day));
+}

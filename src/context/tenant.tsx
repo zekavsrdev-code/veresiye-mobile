@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
 import { useAuth } from '@/context/auth';
 import { apiGet, unwrapList, type Tenant } from '@/lib/api';
@@ -6,6 +14,7 @@ import { apiGet, unwrapList, type Tenant } from '@/lib/api';
 interface TenantContextValue {
   activeTenant: Tenant | null;
   loading: boolean;
+  refresh: () => Promise<void>;
 }
 
 const TenantContext = createContext<TenantContextValue | null>(null);
@@ -17,6 +26,12 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   const [activeTenant, setActiveTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const refresh = useCallback(async () => {
+    if (!user || !token) return;
+    const data = await apiGet<Tenant[] | { results: Tenant[] }>('/tenants/', token);
+    setActiveTenant(unwrapList(data)[0] ?? null);
+  }, [user, token]);
+
   useEffect(() => {
     if (!user || !token) {
       setActiveTenant(null);
@@ -25,10 +40,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     }
     let active = true;
     setLoading(true);
-    apiGet<Tenant[] | { results: Tenant[] }>('/tenants/', token)
-      .then((data) => {
-        if (active) setActiveTenant(unwrapList(data)[0] ?? null);
-      })
+    refresh()
       .catch(() => {
         // Guarded screens surface data errors themselves; tenant stays null.
         if (active) setActiveTenant(null);
@@ -39,9 +51,9 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [user, token]);
+  }, [user, token, refresh]);
 
-  const value = useMemo(() => ({ activeTenant, loading }), [activeTenant, loading]);
+  const value = useMemo(() => ({ activeTenant, loading, refresh }), [activeTenant, loading, refresh]);
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;
 }
 

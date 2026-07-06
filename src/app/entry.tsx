@@ -36,14 +36,22 @@ import {
   apiGet,
   apiPost,
   getErrorMessage,
+  isApiError,
   unwrapList,
   type Customer,
   type LedgerTransaction,
   type Paginated,
 } from '@/lib/api';
+import { enqueueTransaction } from '@/lib/outbox';
+import { addDaysLocalISO, formatDueDate } from '@/lib/dates';
 import { haptics } from '@/lib/haptics';
 import { toCents, type TxType } from '@/lib/money';
+import { newIdempotencyKey } from '@/lib/uuid';
 import { borderTok, surface, text } from '@/lib/ui-tokens';
+
+// Due-term quick chips (days). Term-picking beats a calendar for the fast loop:
+// esnaf credit is "1 hafta / 2 hafta / 1 ay", not an arbitrary date.
+const DUE_TERM_DAYS = [7, 14, 30] as const;
 
 // "150.00" → "150", "150.50" → "150,50" — decimal param back to keypad raw form.
 function decimalToRaw(decimal: string): string {
@@ -76,7 +84,7 @@ const amountColorHex: Record<TxType, { light: string; dark: string }> = {
 
 export default function EntryScreen() {
   const { user, loading: authLoading } = useRequireAuth();
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const { activeTenant } = useTenant();
   const { token } = useAuth();
   const toast = useToast();
@@ -106,8 +114,12 @@ export default function EntryScreen() {
   const [type, setType] = useState<TxType>(params.type === 'odeme' ? 'odeme' : 'borc');
   const [raw, setRaw] = useState(() => decimalToRaw(params.amount ?? ''));
   const [note, setNote] = useState(params.note ?? '');
+  const [dueDays, setDueDays] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // One key per logical entry: a timeout-retry of the same submit replays
+  // instead of double-inserting (backend client_request_id constraint).
+  const idempotencyKey = useRef(newIdempotencyKey());
 
   // Chip name when launched with a bound customer. Cross-tenant/stale id → 404
   // → fall back to the picker so the entry can still be completed.
@@ -241,6 +253,10 @@ export default function EntryScreen() {
           type,
           amount: decimalAmount,
           note: note.trim(),
+          client_request_id: idempotencyKey.current,
+          ...(type === 'borc' && dueDays !== null
+            ? { due_date: addDaysLocalISO(dueDays) }
+            : {}),
         },
         token,
       );
@@ -248,6 +264,25 @@ export default function EntryScreen() {
       toast.show({ message: t('ledger_saved'), intent: 'success' });
       router.back();
     } catch (err) {
+      // No connection → queue instead of failing. The outbox replays with the
+      // same idempotency key, so this exact save can never double-insert.
+      if (isApiError(err) && err.status === 0) {
+        await enqueueTransaction({
+          key: idempotencyKey.current,
+          tenant: activeTenant.id,
+          customer: customerId,
+          type,
+          amount: decimalAmount,
+          note: note.trim(),
+          ...(type === 'borc' && dueDays !== null
+            ? { due_date: addDaysLocalISO(dueDays) }
+            : {}),
+        });
+        haptics.success();
+        toast.show({ message: t('ledger_queued_offline'), intent: 'success' });
+        router.back();
+        return;
+      }
       haptics.error();
       setFormError(getErrorMessage(err, t));
       setSubmitting(false);
@@ -392,6 +427,52 @@ export default function EntryScreen() {
                 if (formError) setFormError(null);
               }}
             />
+
+            {/* Due-term chips — debts only; payments have no due date. */}
+            {type === 'borc' ? (
+              <View className="gap-2">
+                <Text className={`text-xs font-medium ${text.muted}`}>
+                  {t('ledger_due_label')}
+                </Text>
+                <View className="flex-row flex-wrap gap-2">
+                  {[null, ...DUE_TERM_DAYS].map((days) => {
+                    const selected = dueDays === days;
+                    return (
+                      <Pressable
+                        key={days ?? 'none'}
+                        onPress={() => {
+                          haptics.selection();
+                          setDueDays(days);
+                        }}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        className={`min-h-11 items-center justify-center rounded-full border px-4 ${
+                          selected
+                            ? 'border-blue-600 bg-blue-600 dark:border-blue-500 dark:bg-blue-500'
+                            : `${borderTok} ${surface.raised} active:bg-gray-100 dark:active:bg-gray-700`
+                        }`}
+                      >
+                        <Text
+                          className={`text-sm font-medium ${selected ? 'text-white' : text.secondary}`}
+                        >
+                          {days === null
+                            ? t('ledger_due_none')
+                            : t('ledger_due_days').replace('{n}', String(days))}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {dueDays !== null ? (
+                  <Text className={`text-xs ${text.muted}`}>
+                    {t('ledger_due_on').replace(
+                      '{date}',
+                      formatDueDate(addDaysLocalISO(dueDays), lang),
+                    )}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
 
             <TextField label={t('ledger_note_placeholder')} value={note} onChangeText={setNote} />
 

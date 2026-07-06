@@ -34,7 +34,30 @@
           "imageWidth": 76
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-sharing",
+      "expo-file-system",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Fiş fotoğrafı eklemek için fotoğraflarınıza erişim gerekiyor.",
+          "cameraPermission": "Fiş fotoğrafı eklemek için kameranıza erişim gerekiyor.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Müşteri eklemek için rehbere erişim gerekiyor."
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Uygulama kilidini açmak için Face ID kullanılır."
+        }
+      ],
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true,

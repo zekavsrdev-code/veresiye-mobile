@@ -6,7 +6,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { ArrowUpDown, Check, Settings, Users } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, Switch, Text, View } from 'react-native';
 
 import { Avatar } from '@/components/Avatar';
 import { BalanceBadge } from '@/components/BalanceBadge';
@@ -29,17 +29,21 @@ import {
 } from '@/components/Sheet';
 import { SkeletonHeader, SkeletonRow } from '@/components/Skeleton';
 import { TextField } from '@/components/TextField';
+import { PinSetupModal, type PinSetupMode } from '@/components/PinSetupModal';
 import { useRequireAuth } from '@/context/auth';
 import { useLang } from '@/context/lang';
 import { useTenant } from '@/context/tenant';
 import { useToast } from '@/context/toast';
+import { usePermissions } from '@/hooks/usePermissions';
 import {
   apiGet,
   getErrorMessage,
   type Customer,
   type CustomerTotals,
   type Paginated,
+  type TenantStats,
 } from '@/lib/api';
+import { isLockEnabled } from '@/lib/app-lock';
 import { relativeDate } from '@/lib/dates';
 import { haptics } from '@/lib/haptics';
 import type { TranslationKey } from '@/lib/i18n';
@@ -62,6 +66,7 @@ interface LedgerHome {
   next: string | null;
   count: number;
   totals: CustomerTotals;
+  stats: TenantStats | null; // null when the user lacks ledger.view_transaction
 }
 
 type ScreenState =
@@ -80,6 +85,9 @@ export default function CustomerListScreen() {
   const settingsSheetRef = useSheetRef();
   const sortSheetRef = useSheetRef();
 
+  const { hasPerm } = usePermissions();
+  const canViewStats = hasPerm('ledger.view_transaction');
+
   const [state, setState] = useState<ScreenState>({ status: 'loading' });
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -87,6 +95,8 @@ export default function CustomerListScreen() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [sort, setSort] = useState<SortKey>('name');
   const [debtFilter, setDebtFilter] = useState<DebtFilter>('all');
+  const [lockEnabled, setLockEnabledState] = useState(false);
+  const [pinModal, setPinModal] = useState<PinSetupMode | null>(null);
 
   // Monotonic sequence: any new full load invalidates in-flight responses
   // (stale search pages / late page-appends must not clobber fresh results).
@@ -106,20 +116,23 @@ export default function CustomerListScreen() {
     if (debtFilter === 'debtors') path += '&has_debt=true';
     if (debouncedQuery) path += `&search=${encodeURIComponent(debouncedQuery)}`;
     try {
-      const [page, totals] = await Promise.all([
+      const [page, totals, stats] = await Promise.all([
         apiGet<Paginated<Customer>>(path, token),
         apiGet<CustomerTotals>(`/customers/totals/?tenant=${activeTenant.id}`, token),
+        canViewStats
+          ? apiGet<TenantStats>(`/customers/stats/?tenant=${activeTenant.id}`, token)
+          : Promise.resolve(null),
       ]);
       if (seq !== reqSeq.current) return;
       setState({
         status: 'success',
-        data: { customers: page.results, next: page.next, count: page.count, totals },
+        data: { customers: page.results, next: page.next, count: page.count, totals, stats },
       });
     } catch (error) {
       if (seq !== reqSeq.current) return;
       setState({ status: 'error', error });
     }
-  }, [token, activeTenant, sort, debtFilter, debouncedQuery]);
+  }, [token, activeTenant, sort, debtFilter, debouncedQuery, canViewStats]);
 
   // Covers mount, returning from any pushed screen (P0-4) and — because the
   // callback identity changes with load's deps — sort/filter/search re-query.
@@ -197,6 +210,13 @@ export default function CustomerListScreen() {
                 </Text>
               </View>
             ) : null}
+            {item.has_overdue ? (
+              <View className={`rounded-full px-2 py-0.5 ${badge.amber}`}>
+                <Text className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                  {t('ledger_overdue_badge')}
+                </Text>
+              </View>
+            ) : null}
             <BalanceBadge balance={item.balance} size="sm" />
           </View>
         }
@@ -268,7 +288,66 @@ export default function CustomerListScreen() {
             <Card className="gap-1">
               <Text className={`text-sm ${text.muted}`}>{t('ledger_total_receivable')}</Text>
               <MoneyText value={state.data.totals.total_receivable} size="hero" />
+              <Pressable
+                onPress={() => router.push('/aging')}
+                accessibilityRole="link"
+                accessibilityLabel={t('aging_title')}
+                className="mt-1 min-h-11 flex-row items-center justify-center rounded-lg active:opacity-80"
+              >
+                <Text className="text-sm font-medium text-blue-600 dark:text-blue-400">
+                  {t('aging_link')}
+                </Text>
+              </Pressable>
             </Card>
+
+            {/* KPI tiles — permission-gated server stats; 2-col wrap grid. */}
+            {state.data.stats ? (
+              <View className="flex-row flex-wrap gap-3">
+                {(
+                  [
+                    { key: 'stats_today_debt', value: state.data.stats.periods.today.borc, tone: 'amber' },
+                    { key: 'stats_today_payment', value: state.data.stats.periods.today.odeme, tone: 'emerald' },
+                    { key: 'stats_month_debt', value: state.data.stats.periods.month.borc, tone: 'amber' },
+                    { key: 'stats_month_payment', value: state.data.stats.periods.month.odeme, tone: 'emerald' },
+                  ] as const
+                ).map((tile) => (
+                  <View
+                    key={tile.key}
+                    className={`min-w-[47%] flex-1 gap-0.5 rounded-xl p-3 ${surface.raised} ${borderTok}`}
+                  >
+                    <Text className={`text-xs ${text.muted}`}>{t(tile.key)}</Text>
+                    <MoneyText
+                      value={tile.value}
+                      className={`text-lg font-bold ${
+                        tile.tone === 'amber'
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-emerald-600 dark:text-emerald-400'
+                      }`}
+                    />
+                  </View>
+                ))}
+                <Pressable
+                  onPress={() => router.push('/aging')}
+                  accessibilityRole="link"
+                  accessibilityLabel={t('stats_overdue')}
+                  className={`min-w-[47%] flex-1 gap-0.5 rounded-xl p-3 ${surface.raised} ${borderTok} active:opacity-80`}
+                >
+                  <Text className={`text-xs ${text.muted}`}>{t('stats_overdue')}</Text>
+                  <MoneyText
+                    value={state.data.stats.total_overdue}
+                    className="text-lg font-bold text-amber-600 dark:text-amber-400"
+                  />
+                </Pressable>
+                <View
+                  className={`min-w-[47%] flex-1 gap-0.5 rounded-xl p-3 ${surface.raised} ${borderTok}`}
+                >
+                  <Text className={`text-xs ${text.muted}`}>{t('stats_debtor_count')}</Text>
+                  <Text className={`text-lg font-bold ${text.primary}`}>
+                    {state.data.stats.debtor_count}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
             <View className="flex-row items-center gap-3">
               <Pressable
                 onPress={() => presentSheet(sortSheetRef)}
@@ -330,7 +409,12 @@ export default function CustomerListScreen() {
         right={
           <IconButton
             icon={<Settings size={24} color={headerIconColor} />}
-            onPress={() => presentSheet(settingsSheetRef)}
+            onPress={() => {
+              // refresh the persisted flag as the sheet opens (event handler,
+              // not an effect — keeps react-hooks/set-state-in-effect happy)
+              void isLockEnabled().then(setLockEnabledState);
+              presentSheet(settingsSheetRef);
+            }}
             accessibilityLabel={t('ledger_settings')}
           />
         }
@@ -372,7 +456,7 @@ export default function CustomerListScreen() {
         </BottomSheetView>
       </Sheet>
 
-      <Sheet ref={settingsSheetRef} snapPoints={['40%']}>
+      <Sheet ref={settingsSheetRef} snapPoints={['55%']}>
         <BottomSheetView className="gap-6 px-4 pb-8">
           <Text className={`text-lg font-semibold ${text.primary}`}>{t('ledger_settings')}</Text>
           <View className="gap-2">
@@ -387,9 +471,43 @@ export default function CustomerListScreen() {
               onChange={(value) => setLang(value === 'en' ? 'en' : 'tr')}
             />
           </View>
+          <View className="flex-row items-center justify-between gap-3">
+            <View className="flex-1 gap-0.5">
+              <Text className={`text-base font-medium ${text.primary}`}>
+                {t('lock_settings_toggle')}
+              </Text>
+              <Text className={`text-xs ${text.muted}`}>{t('lock_settings_sub')}</Text>
+            </View>
+            <Switch
+              value={lockEnabled}
+              onValueChange={(next) => {
+                dismissSheet(settingsSheetRef);
+                setPinModal(next ? 'setup' : 'disable');
+              }}
+              accessibilityLabel={t('lock_settings_toggle')}
+            />
+          </View>
           <Button label={t('nav_logout')} intent="neutral" onPress={onLogout} />
         </BottomSheetView>
       </Sheet>
+
+      {pinModal ? (
+        <PinSetupModal
+          mode={pinModal}
+          visible
+          onDone={(changed) => {
+            const mode = pinModal;
+            setPinModal(null);
+            if (changed && mode) {
+              setLockEnabledState(mode === 'setup');
+              toast.show({
+                message: t(mode === 'setup' ? 'lock_enabled_toast' : 'lock_disabled_toast'),
+                intent: 'success',
+              });
+            }
+          }}
+        />
+      ) : null}
     </View>
   );
 }
