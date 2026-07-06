@@ -70,3 +70,18 @@ export function SkeletonHeader() {
     </View>
   );
 }
+
+// A labelled-input placeholder (label bar + field box) for form screens that
+// load existing data before rendering their fields (e.g. customer edit).
+export function SkeletonField() {
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      className="gap-2"
+    >
+      <Skeleton className="h-3 w-24" />
+      <Skeleton className="h-12 w-full rounded-md" />
+    </View>
+  );
+}

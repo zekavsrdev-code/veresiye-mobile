@@ -2,10 +2,11 @@
 // the form open; success closes back to the detail with a toast.
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Text, View } from 'react-native';
 
 import { Button } from '@/components/Button';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { SkeletonField } from '@/components/Skeleton';
 import { TextField } from '@/components/TextField';
 import { useRequireAuth } from '@/context/auth';
 import { useLang } from '@/context/lang';
@@ -82,8 +83,11 @@ export default function EditCustomerScreen() {
         className="flex-1"
       >
         {!loaded && !apiError ? (
-          <View className="flex-1 items-center justify-center">
-            <ActivityIndicator />
+          // Skeleton form (not a bare spinner) — same loading language as the
+          // list/detail screens, and it hints the form's shape while it loads.
+          <View className="flex-1 gap-4 px-4">
+            <SkeletonField />
+            <SkeletonField />
           </View>
         ) : (
           <View className="flex-1 px-4 gap-4" pointerEvents={submitting ? 'none' : 'auto'}>

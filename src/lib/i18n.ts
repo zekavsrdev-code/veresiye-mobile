@@ -73,6 +73,7 @@ export const translations = {
     // ── Receipt photos ──
     photo_camera: 'Fiş çek (kamera)',
     photo_gallery: 'Fiş ekle (galeri)',
+    photo_uploading: 'Fiş fotoğrafı yükleniyor…',
     photo_uploaded: 'Fiş fotoğrafı yüklendi.',
     photo_view: 'Fişleri görüntüle',
     // ── Aging ──
@@ -265,6 +266,7 @@ export const translations = {
     // ── Receipt photos ──
     photo_camera: 'Snap receipt (camera)',
     photo_gallery: 'Add receipt (gallery)',
+    photo_uploading: 'Uploading receipt photo…',
     photo_uploaded: 'Receipt photo uploaded.',
     photo_view: 'View receipts',
     // ── Aging ──

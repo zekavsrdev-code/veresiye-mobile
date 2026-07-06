@@ -318,6 +318,8 @@ export default function CustomerDetailScreen() {
       const pick = source === 'camera' ? pickFromCamera : pickFromGallery;
       void pick().then(async (photo: PickedPhoto | null) => {
         if (!photo) return; // cancelled, denied, or module missing (guarded lib warns)
+        // Upload takes seconds on mobile data — immediate feedback, then result.
+        toast.show({ message: t('photo_uploading'), intent: 'info' });
         const form = new FormData();
         // RN FormData file part: {uri, name, type} object, not a Blob.
         form.append('image', {
