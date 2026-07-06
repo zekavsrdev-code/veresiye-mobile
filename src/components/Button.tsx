@@ -80,11 +80,15 @@ export function Button({
       accessibilityRole="button"
       accessibilityLabel={labelText}
       accessibilityState={{ disabled: blocked, busy: loading }}
-      className={`${container({ intent, size })}${disabled ? ' opacity-50' : ''}`}
+      className={container({ intent, size })}
+      // disabled/loading via STYLE, never className toggles: flipping a class
+      // string on a mounted css-interop component freeze-loops on RN 0.86.
+      style={{ opacity: disabled ? 0.5 : 1 }}
     >
       {/* Loading keeps width+height: content goes transparent, spinner overlays. */}
       <View
-        className={`flex-row items-center justify-center gap-2${loading ? ' opacity-0' : ''}`}
+        className="flex-row items-center justify-center gap-2"
+        style={{ opacity: loading ? 0 : 1 }}
       >
         {icon}
         <Text className={label({ intent, size })}>{labelText}</Text>

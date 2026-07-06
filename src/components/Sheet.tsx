@@ -1,32 +1,57 @@
 // @gorhom/bottom-sheet adapter — screens never import gorhom directly.
 // Requires BottomSheetModalProvider in the root layout.
-import { forwardRef, useCallback, useRef, type ReactNode, type RefObject } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { Pressable, Text, View } from 'react-native';
 import {
   BottomSheetModal,
   BottomSheetBackdrop,
-  BottomSheetView,
+  BottomSheetView as GorhomSheetView,
   BottomSheetTextInput,
   BottomSheetScrollView,
   type BottomSheetBackdropProps,
 } from '@gorhom/bottom-sheet';
-import { cssInterop, useColorScheme } from 'nativewind';
+import { useColorScheme } from 'nativewind';
 import { text } from '@/lib/ui-tokens';
 
-// Register gorhom components with NativeWind so className works on them.
-cssInterop(BottomSheetView, { className: 'style' });
-cssInterop(BottomSheetTextInput, { className: 'style' });
-cssInterop(BottomSheetScrollView, {
-  className: 'style',
-  contentContainerClassName: 'contentContainerStyle',
-});
+// Do NOT cssInterop-register gorhom components: their portal-mount lifecycle makes
+// css-interop's "component upgraded" dev warning fire, and that warning's prop
+// stringifier crashes on react-navigation context getters ("Couldn't find a
+// navigation context" render error). Instead, className lives on a plain inner
+// View — call sites keep using <BottomSheetView className=...> unchanged.
+export function BottomSheetView({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <GorhomSheetView>
+      <View className={className}>{children}</View>
+    </GorhomSheetView>
+  );
+}
 
-export { BottomSheetView, BottomSheetTextInput, BottomSheetScrollView };
+export { BottomSheetTextInput, BottomSheetScrollView };
 
-export type SheetRef = RefObject<BottomSheetModal | null>;
+export interface SheetHandle {
+  present: () => void;
+  dismiss: () => void;
+}
+
+export type SheetRef = RefObject<SheetHandle | null>;
 
 export function useSheetRef(): SheetRef {
-  return useRef<BottomSheetModal>(null);
+  return useRef<SheetHandle>(null);
 }
 
 export function presentSheet(ref: SheetRef): void {
@@ -43,12 +68,44 @@ interface SheetProps {
   children: ReactNode;
 }
 
-export const Sheet = forwardRef<BottomSheetModal, SheetProps>(function Sheet(
+// LAZY-MOUNT on purpose: an always-mounted (but closed) BottomSheetModal host was
+// swallowing ALL touches on the screen beneath it on RN 0.86/Fabric — rows, FAB,
+// header buttons, everything. The modal now exists ONLY while open: present()
+// mounts it then opens; dismissal unmounts it again, so a closed sheet can never
+// intercept a touch.
+export const Sheet = forwardRef<SheetHandle, SheetProps>(function Sheet(
   { snapPoints = ['50%'], onDismiss, children },
   ref,
 ) {
   const { colorScheme } = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const modalRef = useRef<BottomSheetModal>(null);
+  const [mounted, setMounted] = useState(false);
+  const pendingPresent = useRef(false);
+
+  useImperativeHandle(ref, () => ({
+    present: () => {
+      if (mounted) {
+        modalRef.current?.present();
+      } else {
+        pendingPresent.current = true;
+        setMounted(true);
+      }
+    },
+    dismiss: () => modalRef.current?.dismiss(),
+  }), [mounted]);
+
+  useEffect(() => {
+    if (mounted && pendingPresent.current) {
+      pendingPresent.current = false;
+      modalRef.current?.present();
+    }
+  }, [mounted]);
+
+  const handleDismiss = useCallback(() => {
+    setMounted(false);
+    onDismiss?.();
+  }, [onDismiss]);
 
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
@@ -62,12 +119,14 @@ export const Sheet = forwardRef<BottomSheetModal, SheetProps>(function Sheet(
     [],
   );
 
+  if (!mounted) return null;
+
   return (
     <BottomSheetModal
-      ref={ref}
+      ref={modalRef}
       snapPoints={snapPoints}
       enablePanDownToClose
-      onDismiss={onDismiss}
+      onDismiss={handleDismiss}
       backdropComponent={renderBackdrop}
       backgroundStyle={{ backgroundColor: isDark ? '#1f2937' : '#ffffff' }}
       handleIndicatorStyle={{ backgroundColor: isDark ? '#4b5563' : '#d1d5db' }}

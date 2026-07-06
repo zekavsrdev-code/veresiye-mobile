@@ -67,9 +67,11 @@ function nextCursor(data: Paginated<Customer> | Customer[]): string | null {
   return Array.isArray(data) ? null : data.next;
 }
 
-const amountColorCls: Record<TxType, string> = {
-  borc: 'text-amber-600 dark:text-amber-400',
-  odeme: 'text-emerald-600 dark:text-emerald-400',
+// Hex map (not classes): `type` flips at runtime, and toggling a class string on
+// a mounted css-interop component freeze-loops on RN 0.86 — color via style.
+const amountColorHex: Record<TxType, { light: string; dark: string }> = {
+  borc: { light: '#d97706', dark: '#fbbf24' }, // amber-600 / amber-400
+  odeme: { light: '#059669', dark: '#34d399' }, // emerald-600 / emerald-400
 };
 
 export default function EntryScreen() {
@@ -356,8 +358,11 @@ export default function EntryScreen() {
             <View className="items-center py-4">
               <Text className={`text-sm ${text.muted}`}>{t('ledger_amount')}</Text>
               <Text
-                className={`text-4xl font-bold ${amountColorCls[type]}`}
-                style={{ fontVariant: ['tabular-nums'] }}
+                className="text-4xl font-bold"
+                style={{
+                  fontVariant: ['tabular-nums'],
+                  color: dark ? amountColorHex[type].dark : amountColorHex[type].light,
+                }}
                 accessibilityLabel={`${t('ledger_amount')}: ${rawToDisplay(raw)} ₺`}
               >
                 {`${rawToDisplay(raw)} ₺`}

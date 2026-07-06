@@ -9,7 +9,7 @@ import {
   type KeyboardTypeOptions,
 } from 'react-native';
 import { useColorScheme } from 'nativewind';
-import { inputCls, inputErrorCls, inputFocusCls, text } from '@/lib/ui-tokens';
+import { inputCls, text } from '@/lib/ui-tokens';
 
 export interface TextFieldProps {
   label: string;
@@ -38,18 +38,26 @@ export function TextField({
 }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
   const { colorScheme } = useColorScheme();
+  const dark = colorScheme === 'dark';
 
   useEffect(() => {
     if (error) AccessibilityInfo.announceForAccessibility(error);
   }, [error]);
 
-  const stateCls = error ? inputErrorCls : focused ? inputFocusCls : '';
+  // Focus/error border via STYLE, not className: toggling a class string on a
+  // mounted css-interop component freeze-loops on RN 0.86 (the Borçlu-tab bug).
+  const borderColor = error
+    ? dark ? '#fb7185' : '#f43f5e' // rose-400 / rose-500
+    : focused
+      ? dark ? '#60a5fa' : '#3b82f6' // blue-400 / blue-500
+      : undefined; // class default (gray-200 / gray-700)
 
   return (
     <View className="gap-1">
       <Text className={`text-xs font-medium ${text.secondary}`}>{label}</Text>
       <TextInput
-        className={`${inputCls} ${stateCls}`}
+        className={inputCls}
+        style={borderColor ? { borderColor } : undefined}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}

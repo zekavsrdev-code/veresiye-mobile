@@ -108,6 +108,9 @@ export const translations = {
     ledger_link_expired_status: 'Süresi doldu',
     ledger_link_revoked_status: 'İptal edildi',
     ledger_no_phone: 'Telefon numarası yok',
+    date_today: 'Bugün',
+    date_yesterday: 'Dün',
+    date_days_ago: '{n} gün önce',
   },
   en: {
     // ── General ──
@@ -213,6 +216,9 @@ export const translations = {
     ledger_link_expired_status: 'Expired',
     ledger_link_revoked_status: 'Revoked',
     ledger_no_phone: 'No phone number',
+    date_today: 'Today',
+    date_yesterday: 'Yesterday',
+    date_days_ago: '{n} days ago',
   },
 } as const;
 

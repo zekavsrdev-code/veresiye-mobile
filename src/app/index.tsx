@@ -75,6 +75,7 @@ export default function CustomerListScreen() {
   const { activeTenant, loading: tenantLoading } = useTenant();
   const router = useRouter();
   const { colorScheme } = useColorScheme();
+  const dark = colorScheme === 'dark';
   const toast = useToast();
   const settingsSheetRef = useSheetRef();
   const sortSheetRef = useSheetRef();
@@ -349,14 +350,18 @@ export default function CustomerListScreen() {
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
                 accessibilityLabel={t(option.labelKey)}
-                className={`min-h-12 flex-row items-center justify-between rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700 ${
-                  selected ? 'bg-gray-100 dark:bg-gray-700' : ''
-                }`}
+                className="min-h-12 flex-row items-center justify-between rounded-lg px-3 active:bg-gray-100 dark:active:bg-gray-700"
+                // selected via STYLE (runtime className toggles freeze-loop on RN 0.86)
+                style={selected ? { backgroundColor: dark ? '#374151' : '#f3f4f6' } : undefined}
               >
                 <Text
-                  className={
-                    selected ? `text-base font-bold ${text.primary}` : `text-base ${text.secondary}`
-                  }
+                  className="text-base"
+                  style={{
+                    color: selected
+                      ? dark ? '#f9fafb' : '#111827'
+                      : dark ? '#d1d5db' : '#4b5563',
+                    fontWeight: selected ? '700' : '400',
+                  }}
                 >
                   {t(option.labelKey)}
                 </Text>
