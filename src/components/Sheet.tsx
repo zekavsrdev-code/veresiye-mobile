@@ -98,7 +98,9 @@ export const Sheet = forwardRef<SheetHandle, SheetProps>(function Sheet(
   useEffect(() => {
     if (mounted && pendingPresent.current) {
       pendingPresent.current = false;
-      modalRef.current?.present();
+      // Next frame: the freshly-mounted BottomSheetModal must attach to the
+      // provider host before present(), or the call is silently dropped.
+      requestAnimationFrame(() => modalRef.current?.present());
     }
   }, [mounted]);
 

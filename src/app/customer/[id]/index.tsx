@@ -31,6 +31,7 @@ import {
   type Paginated,
 } from '@/lib/api';
 import { relativeDate } from '@/lib/dates';
+import { haptics } from '@/lib/haptics';
 import { fromCents, toCents } from '@/lib/money';
 import { badge, surface, text } from '@/lib/ui-tokens';
 
@@ -166,6 +167,7 @@ export default function CustomerDetailScreen() {
 
   const handleLongPress = useCallback(
     (tx: LedgerTransaction) => {
+      haptics.selection(); // felt confirmation that the long-press registered
       setSelectedTx(tx);
       presentSheet(txSheetRef);
     },

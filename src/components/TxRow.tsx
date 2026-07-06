@@ -68,6 +68,8 @@ function TxRowInner({ tx, runningBalance, onLongPress }: TxRowProps) {
       accessibilityRole="button"
       accessibilityLabel={a11yLabel}
       onLongPress={onLongPress ? () => onLongPress(tx) : undefined}
+      // Snappier storno affordance — the default 500ms hold reads as "broken".
+      delayLongPress={350}
       className="min-h-11 flex-row items-center gap-3 px-4 py-3 active:bg-gray-50 dark:active:bg-gray-800"
     >
       <View className={`h-10 w-10 items-center justify-center rounded-full ${cfg.bgCls}`}>

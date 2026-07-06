@@ -13,8 +13,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowDownLeft, ArrowUpRight, ChevronDown } from 'lucide-react-native';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, UserPlus } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 
 import { AmountKeypad, rawToDecimalString, rawToDisplay } from '@/components/AmountKeypad';
@@ -160,6 +160,14 @@ export default function EntryScreen() {
     if (pickerOpen) loadCustomers();
   }, [pickerOpen, loadCustomers]);
 
+  // Returning from "new customer" (create → detail → back) must show the fresh
+  // customer in the picker — the mount-time fetch above is stale by then.
+  useFocusEffect(
+    useCallback(() => {
+      if (pickerOpen) loadCustomers();
+    }, [pickerOpen, loadCustomers]),
+  );
+
   const loadMoreCustomers = useCallback(() => {
     if (picker.status !== 'success' || !picker.next || loadingMore || !token) return;
     const seq = pickerRequestSeq.current;
@@ -287,11 +295,19 @@ export default function EntryScreen() {
               onEndReached={loadMoreCustomers}
               onEndReachedThreshold={0.5}
               ListHeaderComponent={
-                <ListRow
-                  title={`＋ ${t('ledger_new_customer')}`}
+                // Styled as an ACTION (blue + icon), not a plain row — plain text
+                // reads as "just another customer" and gets missed.
+                <Pressable
                   onPress={() => router.push('/customer/new')}
+                  accessibilityRole="button"
                   accessibilityLabel={t('ledger_new_customer')}
-                />
+                  className="mx-4 my-2 min-h-12 flex-row items-center justify-center gap-2 rounded-lg border border-dashed border-blue-400 active:bg-blue-50 dark:border-blue-500 dark:active:bg-blue-950"
+                >
+                  <UserPlus size={18} color={dark ? '#60a5fa' : '#2563eb'} />
+                  <Text className="text-base font-semibold text-blue-600 dark:text-blue-400">
+                    {t('ledger_new_customer')}
+                  </Text>
+                </Pressable>
               }
               ListFooterComponent={
                 loadingMore ? (
