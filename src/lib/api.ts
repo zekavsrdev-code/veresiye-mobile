@@ -207,6 +207,12 @@ export function setSessionTokens(access: string | null, refresh: string | null):
   sessionRefresh = refresh;
 }
 
+/** Current access token — for upload adapters that bypass request() (native
+ * multipart via expo-file-system) but still need the live Bearer. */
+export function getSessionAccess(): string | null {
+  return sessionAccess;
+}
+
 export function setTokensRefreshedHandler(
   handler: ((tokens: { access: string; refresh: string }) => void) | null,
 ): void {
@@ -216,6 +222,12 @@ export function setTokensRefreshedHandler(
 // Single-flight: many parallel 401s trigger ONE rotation; the rest await it.
 // (Rotation blacklists the old token — a second concurrent rotate would 401.)
 let refreshInFlight: Promise<string | null> | null = null;
+
+/** Rotate the refresh token → new access, or null if refresh is dead. Exported
+ * for upload adapters that must refresh+retry outside the request() core. */
+export function refreshAccessToken(): Promise<string | null> {
+  return refreshSession();
+}
 
 function refreshSession(): Promise<string | null> {
   if (!refreshInFlight) {
@@ -317,14 +329,13 @@ interface RequestOpts {
   method: string;
   token?: string;
   json?: unknown; // JSON body
-  form?: FormData; // multipart body (skips Content-Type)
 }
 
 async function request<T>(path: string, opts: RequestOpts, isRetry = false): Promise<T> {
   const url = apiUrl(path);
   const bearer = sessionAccess ?? opts.token;
-  const headers = buildHeaders(bearer, opts.form === undefined && opts.json !== undefined);
-  const body = opts.form ?? (opts.json !== undefined ? JSON.stringify(opts.json) : undefined);
+  const headers = buildHeaders(bearer, opts.json !== undefined);
+  const body = opts.json !== undefined ? JSON.stringify(opts.json) : undefined;
 
   let res: Response;
   try {
@@ -367,11 +378,6 @@ export function apiDelete(path: string, token?: string, body?: unknown): Promise
   return request<void>(path, { method: 'DELETE', token, json: body });
 }
 
-// Multipart upload: fetch sets the multipart boundary Content-Type itself, so
-// `form` is passed through and buildHeaders skips the JSON content type.
-export function apiUpload<T>(path: string, form: FormData, token?: string): Promise<T> {
-  return request<T>(path, { method: 'POST', token, form });
-}
 
 // ─── List unwrapper ─────────────────────────────────────────────────────────────
 // Paginated endpoints return { results: T[] }, unpaginated return T[] directly.

@@ -49,7 +49,6 @@ import { flushOutbox, removeOutboxEntry } from '@/lib/outbox';
 import {
   apiGet,
   apiPost,
-  apiUpload,
   apiUrl,
   getErrorMessage,
   unwrapList,
@@ -61,6 +60,7 @@ import { relativeDate } from '@/lib/dates';
 import { haptics } from '@/lib/haptics';
 import { fromCents, toCents } from '@/lib/money';
 import { pickFromCamera, pickFromGallery, type PickedPhoto } from '@/lib/photo-picker';
+import { uploadReceipt } from '@/lib/receipt-upload';
 import { downloadAndShare } from '@/lib/share-file';
 import { badge, surface, text } from '@/lib/ui-tokens';
 
@@ -324,15 +324,8 @@ export default function CustomerDetailScreen() {
         if (!photo) return; // cancelled, denied, or module missing (guarded lib warns)
         // Upload takes seconds on mobile data — immediate feedback, then result.
         toast.show({ message: t('photo_uploading'), intent: 'info' });
-        const form = new FormData();
-        // RN FormData file part: {uri, name, type} object, not a Blob.
-        form.append('image', {
-          uri: photo.uri,
-          name: photo.fileName,
-          type: photo.mimeType,
-        } as unknown as Blob);
         try {
-          await apiUpload(`/transactions/${tx.id}/attachments/`, form, token);
+          await uploadReceipt(tx.id, photo.uri, photo.mimeType);
           haptics.success();
           toast.show({ message: t('photo_uploaded'), intent: 'success' });
           void load().then(() => setStatus('success'));
