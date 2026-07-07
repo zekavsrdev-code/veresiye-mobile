@@ -151,7 +151,7 @@ export const translations = {
     ledger_filter_debtors: 'Borçlu',
     ledger_share_whatsapp: "WhatsApp'ta Paylaş",
     ledger_share_message:
-      'Merhaba {name}, güncel hesap özetiniz — bakiye: {balance}. Görüntülemek ve onaylamak için: {url}',
+      'Merhaba {name} 👋\n\nGüncel bakiyeniz: *{balance}*\n\nEkstrenizi görüntülemek ve onaylamak için:\n{url}',
     ledger_dispute_badge: 'İtiraz',
     ledger_link_history: 'Paylaşım Geçmişi',
     ledger_response_approved: 'Onaylandı',
@@ -345,7 +345,7 @@ export const translations = {
     ledger_filter_debtors: 'With debt',
     ledger_share_whatsapp: 'Share on WhatsApp',
     ledger_share_message:
-      'Hello {name}, your current statement — balance: {balance}. View and confirm: {url}',
+      'Hello {name} 👋\n\nYour current balance: *{balance}*\n\nTo view and confirm your statement:\n{url}',
     ledger_dispute_badge: 'Dispute',
     ledger_link_history: 'Share history',
     ledger_response_approved: 'Approved',
