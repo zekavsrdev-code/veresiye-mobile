@@ -249,6 +249,10 @@ export default function CustomerDetailScreen() {
           tx={item.tx}
           runningBalance={item.runningBalance}
           syncState={item.syncState}
+          // Server rows: tap OR long-press opens the actions sheet (tap is the
+          // discoverable path — receipt photo lives there). Failed outbox rows
+          // long-press to remove; pending rows have no actions.
+          onPress={item.syncState ? undefined : handleLongPress}
           onLongPress={
             item.syncState === 'failed'
               ? removeFailedEntry

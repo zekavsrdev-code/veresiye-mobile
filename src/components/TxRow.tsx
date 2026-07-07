@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, Paperclip } from 'lucide-react-native';
+import { ArrowDownLeft, ArrowUpRight, MoreVertical, Paperclip } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import { memo } from 'react';
 import { Pressable, Text, View } from 'react-native';
@@ -41,12 +41,14 @@ const typeCfg: Record<
 export interface TxRowProps {
   tx: LedgerTransaction;
   runningBalance?: string;
+  /** Tap opens the row's action sheet (receipt / storno) — the discoverable path. */
+  onPress?: (tx: LedgerTransaction) => void;
   onLongPress?: (tx: LedgerTransaction) => void;
   /** Outbox states: 'pending' = queued for sync, 'failed' = server rejected. */
   syncState?: 'pending' | 'failed';
 }
 
-function TxRowInner({ tx, runningBalance, onLongPress, syncState }: TxRowProps) {
+function TxRowInner({ tx, runningBalance, onPress, onLongPress, syncState }: TxRowProps) {
   const { t, lang } = useLang();
   const { colorScheme } = useColorScheme();
 
@@ -75,6 +77,8 @@ function TxRowInner({ tx, runningBalance, onLongPress, syncState }: TxRowProps) 
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={a11yLabel}
+      accessibilityHint={onPress ? t('ledger_tx_actions_hint') : undefined}
+      onPress={onPress ? () => onPress(tx) : undefined}
       onLongPress={onLongPress ? () => onLongPress(tx) : undefined}
       // Snappier storno affordance — the default 500ms hold reads as "broken".
       delayLongPress={350}
@@ -123,6 +127,12 @@ function TxRowInner({ tx, runningBalance, onLongPress, syncState }: TxRowProps) 
           </Text>
         )}
       </View>
+
+      {/* Trailing affordance so the row reads as tappable (opens the action
+          sheet: receipt photo, storno, view receipts). Only on actionable rows. */}
+      {onPress ? (
+        <MoreVertical size={18} color={colorScheme === 'dark' ? '#6b7280' : '#9ca3af'} />
+      ) : null}
     </Pressable>
   );
 }

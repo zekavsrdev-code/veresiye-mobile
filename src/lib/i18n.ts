@@ -76,6 +76,7 @@ export const translations = {
     photo_uploading: 'Fiş fotoğrafı yükleniyor…',
     photo_uploaded: 'Fiş fotoğrafı yüklendi.',
     photo_view: 'Fişleri görüntüle',
+    ledger_tx_actions_hint: 'İşlem seçenekleri için dokun',
     // ── Aging ──
     aging_title: 'Vade takibi',
     aging_link: 'Vade takibini gör',
@@ -269,6 +270,7 @@ export const translations = {
     photo_uploading: 'Uploading receipt photo…',
     photo_uploaded: 'Receipt photo uploaded.',
     photo_view: 'View receipts',
+    ledger_tx_actions_hint: 'Tap for transaction options',
     // ── Aging ──
     aging_title: 'Overdue tracking',
     aging_link: 'View overdue tracking',

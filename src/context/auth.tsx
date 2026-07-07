@@ -9,12 +9,21 @@ import {
   type ReactNode,
 } from 'react';
 
-import { apiGet, apiPost, isApiError, setUnauthorizedHandler, type User } from '@/lib/api';
+import {
+  apiGet,
+  apiPost,
+  isApiError,
+  setSessionTokens,
+  setTokensRefreshedHandler,
+  setUnauthorizedHandler,
+  type User,
+} from '@/lib/api';
 import { initOutbox, setOutboxToken } from '@/lib/outbox';
 import { registerPushToken, unregisterPushToken } from '@/lib/push';
 import { tokenStore } from '@/lib/token-store';
 
 const TOKEN_KEY = 'veresiye.access_token';
+const REFRESH_KEY = 'veresiye.refresh_token';
 
 export interface RegisterInput {
   username: string;
@@ -33,21 +42,42 @@ interface AuthContextValue {
   logout: () => Promise<void>;
 }
 
+interface LoginResp {
+  access: string;
+  refresh?: string;
+}
+
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-// Mirrors frontend/src/context/AuthContext.tsx, adapted for mobile: the web build
-// rotates a short-lived access token against an httpOnly refresh COOKIE. Cookies
-// aren't a portable RN primitive, so mobile persists the access token itself in
-// the OS keychain (expo-secure-store) and re-validates it against /auth/me/ on
-// launch. A mobile refresh strategy (token-in-body rotation) is a later concern.
+// Mirrors frontend/src/context/AuthContext.tsx, adapted for mobile. The web build
+// rotates a short-lived access token against an httpOnly refresh COOKIE; RN has no
+// cookie jar, so the backend returns the refresh token in the BODY for mobile
+// (X-Client-Platform header) and we persist BOTH tokens in the OS keychain. The
+// api.ts request core silently rotates the refresh token on a 401 and retries, so
+// the 15-minute access token renews itself without forcing re-login for 7 days.
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
-  // Offline outbox: restore the queue once, then keep it fed with the live
-  // token so queued entries flush as soon as we're signed in + online.
+  // Persist a token pair to the keychain + push it into the api.ts session store
+  // (which the request core reads for the Bearer header and refresh rotation).
+  const applyTokens = useCallback(async (access: string, refresh: string | null) => {
+    setToken(access);
+    setSessionTokens(access, refresh);
+    await tokenStore.set(TOKEN_KEY, access);
+    if (refresh) await tokenStore.set(REFRESH_KEY, refresh);
+  }, []);
+
+  const clearTokens = useCallback(async () => {
+    setToken(null);
+    setSessionTokens(null, null);
+    await tokenStore.remove(TOKEN_KEY);
+    await tokenStore.remove(REFRESH_KEY);
+  }, []);
+
+  // Offline outbox: restore the queue once, then keep it fed with the live token.
   useEffect(() => {
     void initOutbox();
   }, []);
@@ -55,42 +85,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOutboxToken(token);
   }, [token]);
 
-  // Push device registration: fires after successful login/register (token just
-  // set) AND on app start once the stored token restores — idempotent server-side.
+  // Push device registration: after login/register and on restore. Idempotent.
   useEffect(() => {
     if (token) void registerPushToken(token);
   }, [token]);
 
-  // Global 401 → drop the dead session and land on /login, wherever the user
-  // was. Registered once; api.ts skips /auth/* so login failures stay inline.
+  // A silent refresh (in api.ts) produced a new pair → mirror it into state +
+  // keychain so a restart and the outbox use the rotated tokens.
+  useEffect(() => {
+    setTokensRefreshedHandler(({ access, refresh }) => {
+      setToken(access);
+      tokenStore.set(TOKEN_KEY, access).catch(() => {});
+      tokenStore.set(REFRESH_KEY, refresh).catch(() => {});
+    });
+    return () => setTokensRefreshedHandler(null);
+  }, []);
+
+  // Refresh exhausted (blacklisted/expired) → drop the dead session, go to /login.
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setUser(null);
-      setToken(null);
-      tokenStore.remove(TOKEN_KEY).catch(() => {});
+      void clearTokens();
       router.replace('/login');
     });
     return () => setUnauthorizedHandler(null);
-  }, [router]);
+  }, [router, clearTokens]);
 
+  // Launch restore: seed the session store from the keychain, then validate. A
+  // 401 here means the SHORT access token expired — the request core's silent
+  // refresh transparently rotates it, so a valid refresh keeps the user in.
   useEffect(() => {
     let active = true;
     (async () => {
-      const stored = await tokenStore.get(TOKEN_KEY);
-      if (!stored) {
+      const [storedAccess, storedRefresh] = await Promise.all([
+        tokenStore.get(TOKEN_KEY),
+        tokenStore.get(REFRESH_KEY),
+      ]);
+      if (!storedAccess) {
         if (active) setLoading(false);
         return;
       }
+      setSessionTokens(storedAccess, storedRefresh);
       try {
-        const me = await apiGet<User>('/auth/me/', stored);
+        const me = await apiGet<User>('/auth/me/'); // request core refreshes on 401
         if (active) {
-          setToken(stored);
+          setToken(storedAccess);
           setUser(me);
         }
       } catch (err) {
-        // Stored token is stale/invalid — drop it and stay logged out.
         if (isApiError(err) && err.status === 401) {
-          await tokenStore.remove(TOKEN_KEY);
+          await clearTokens(); // refresh also dead — stay logged out
         }
       } finally {
         if (active) setLoading(false);
@@ -99,37 +143,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [clearTokens]);
 
-  const login = useCallback(async (username: string, password: string, remember = true) => {
-    const data = await apiPost<{ access: string; remember: boolean }>('/auth/login/', {
-      username,
-      password,
-      remember,
-    });
-    await tokenStore.set(TOKEN_KEY, data.access);
-    const me = await apiGet<User>('/auth/me/', data.access);
-    setToken(data.access);
-    setUser(me);
-  }, []);
+  const login = useCallback(
+    async (username: string, password: string, remember = true) => {
+      const data = await apiPost<LoginResp>('/auth/login/', { username, password, remember });
+      await applyTokens(data.access, data.refresh ?? null);
+      const me = await apiGet<User>('/auth/me/', data.access);
+      setUser(me);
+    },
+    [applyTokens],
+  );
 
-  const register = useCallback(async (input: RegisterInput) => {
-    const data = await apiPost<{ user: User; access: string }>('/auth/register/', input);
-    await tokenStore.set(TOKEN_KEY, data.access);
-    setToken(data.access);
-    setUser(data.user);
-  }, []);
+  const register = useCallback(
+    async (input: RegisterInput) => {
+      const data = await apiPost<LoginResp & { user: User }>('/auth/register/', input);
+      await applyTokens(data.access, data.refresh ?? null);
+      setUser(data.user);
+    },
+    [applyTokens],
+  );
 
   const logout = useCallback(async () => {
-    const current = token;
-    // Deregister the push token BEFORE clearing the session — the DELETE call
-    // needs the still-valid Bearer token.
-    if (current) await unregisterPushToken(current).catch(() => {});
+    const currentAccess = token;
+    const currentRefresh = await tokenStore.get(REFRESH_KEY);
+    // Deregister the push token BEFORE clearing — the DELETE needs a live Bearer.
+    if (currentAccess) await unregisterPushToken(currentAccess).catch(() => {});
     setUser(null);
-    setToken(null);
-    await tokenStore.remove(TOKEN_KEY);
-    if (current) apiPost('/auth/logout/', {}, current).catch(() => {});
-  }, [token]);
+    await clearTokens();
+    // Blacklist the refresh token server-side (best-effort, fire-and-forget).
+    if (currentRefresh) apiPost('/auth/logout/', { refresh: currentRefresh }).catch(() => {});
+  }, [token, clearTokens]);
 
   const value = useMemo(
     () => ({ user, token, loading, login, register, logout }),

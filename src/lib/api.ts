@@ -191,6 +191,59 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   onUnauthorized = handler;
 }
 
+// ─── Session tokens + silent refresh ────────────────────────────────────────────
+// AuthProvider feeds the CURRENT access+refresh pair here; on a 401 the request
+// core silently rotates the refresh token (single-flight) and retries once. The
+// refreshed pair is pushed back to AuthProvider via the handler so state and
+// SecureStore stay in sync. Backend returns the refresh token in the BODY only
+// for requests carrying X-Client-Platform: mobile (RN has no cookie jar).
+
+let sessionAccess: string | null = null;
+let sessionRefresh: string | null = null;
+let onTokensRefreshed: ((tokens: { access: string; refresh: string }) => void) | null = null;
+
+export function setSessionTokens(access: string | null, refresh: string | null): void {
+  sessionAccess = access;
+  sessionRefresh = refresh;
+}
+
+export function setTokensRefreshedHandler(
+  handler: ((tokens: { access: string; refresh: string }) => void) | null,
+): void {
+  onTokensRefreshed = handler;
+}
+
+// Single-flight: many parallel 401s trigger ONE rotation; the rest await it.
+// (Rotation blacklists the old token — a second concurrent rotate would 401.)
+let refreshInFlight: Promise<string | null> | null = null;
+
+function refreshSession(): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const current = sessionRefresh;
+      if (!current) return null;
+      try {
+        const res = await fetch(apiUrl('/auth/refresh/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Client-Platform': 'mobile' },
+          body: JSON.stringify({ refresh: current }),
+        });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { access: string; refresh?: string };
+        sessionAccess = data.access;
+        sessionRefresh = data.refresh ?? current;
+        onTokensRefreshed?.({ access: sessionAccess, refresh: sessionRefresh });
+        return sessionAccess;
+      } catch {
+        return null; // offline — the caller surfaces the original 401
+      }
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
 export function getErrorMessage<K extends string>(err: unknown, t: (key: K) => string): string {
   if (!isApiError(err)) {
     return err instanceof Error ? err.message : String(err);
@@ -214,7 +267,9 @@ export function apiUrl(path: string): string {
 }
 
 function buildHeaders(token?: string, isJson = true): Record<string, string> {
-  const headers: Record<string, string> = {};
+  // The platform header tells the backend to carry refresh tokens in the BODY
+  // (web stays httpOnly-cookie-only) — see core/auth_views._is_mobile_client.
+  const headers: Record<string, string> = { 'X-Client-Platform': 'mobile' };
   if (isJson) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
   return headers;
@@ -222,9 +277,6 @@ function buildHeaders(token?: string, isJson = true): Record<string, string> {
 
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    if (res.status === 401 && !res.url.includes('/auth/')) {
-      onUnauthorized?.();
-    }
     let code = 'error';
     let detail = `HTTP ${res.status}`;
     let errors: Record<string, string[]> | null = null;
@@ -254,95 +306,71 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ─── Request core (auth-aware, refresh-on-401) ───────────────────────────────────
+// Every helper funnels through here. On a 401 for a non-/auth/ request it silently
+// rotates the refresh token (single-flight) and retries ONCE with the new access
+// token; if refresh fails it fires onUnauthorized (→ login) and rethrows the 401.
+// `token` args are kept for call-site compatibility but the live session access
+// token wins, so a retry uses the freshly-rotated one.
+
+interface RequestOpts {
+  method: string;
+  token?: string;
+  json?: unknown; // JSON body
+  form?: FormData; // multipart body (skips Content-Type)
+}
+
+async function request<T>(path: string, opts: RequestOpts, isRetry = false): Promise<T> {
+  const url = apiUrl(path);
+  const bearer = sessionAccess ?? opts.token;
+  const headers = buildHeaders(bearer, opts.form === undefined && opts.json !== undefined);
+  const body = opts.form ?? (opts.json !== undefined ? JSON.stringify(opts.json) : undefined);
+
+  let res: Response;
+  try {
+    res = await fetch(url, { method: opts.method, headers, body });
+  } catch {
+    throw new ApiError(0, 'network_error', 'network_error');
+  }
+
+  // Mid-session 401 on a protected call → try a silent refresh + one retry. The
+  // /auth/* endpoints are exempt (a login/refresh 401 is terminal, not renewable).
+  if (res.status === 401 && !isRetry && !path.includes('/auth/')) {
+    const newAccess = await refreshSession();
+    if (newAccess) {
+      return request<T>(path, { ...opts, token: newAccess }, true);
+    }
+    onUnauthorized?.(); // refresh failed → session is dead
+  }
+  return handleResponse<T>(res);
+}
+
 // ─── API functions ──────────────────────────────────────────────────────────────
 
-export async function apiGet<T>(path: string, token?: string): Promise<T> {
-  const url = apiUrl(path);
-  let res: Response;
-  try {
-    res = await fetch(url, { method: 'GET', headers: buildHeaders(token, false) });
-  } catch {
-    throw new ApiError(0, 'network_error', 'network_error');
-  }
-  return handleResponse<T>(res);
+export function apiGet<T>(path: string, token?: string): Promise<T> {
+  return request<T>(path, { method: 'GET', token });
 }
 
-export async function apiPost<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const url = apiUrl(path);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: buildHeaders(token),
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new ApiError(0, 'network_error', 'network_error');
-  }
-  return handleResponse<T>(res);
+export function apiPost<T>(path: string, body: unknown, token?: string): Promise<T> {
+  return request<T>(path, { method: 'POST', token, json: body });
 }
 
-export async function apiPut<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const url = apiUrl(path);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'PUT',
-      headers: buildHeaders(token),
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new ApiError(0, 'network_error', 'network_error');
-  }
-  return handleResponse<T>(res);
+export function apiPut<T>(path: string, body: unknown, token?: string): Promise<T> {
+  return request<T>(path, { method: 'PUT', token, json: body });
 }
 
-export async function apiPatch<T>(path: string, body: unknown, token?: string): Promise<T> {
-  const url = apiUrl(path);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'PATCH',
-      headers: buildHeaders(token),
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new ApiError(0, 'network_error', 'network_error');
-  }
-  return handleResponse<T>(res);
+export function apiPatch<T>(path: string, body: unknown, token?: string): Promise<T> {
+  return request<T>(path, { method: 'PATCH', token, json: body });
 }
 
-export async function apiDelete(path: string, token?: string, body?: unknown): Promise<void> {
-  const url = apiUrl(path);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'DELETE',
-      headers: buildHeaders(token, body !== undefined),
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-  } catch {
-    throw new ApiError(0, 'network_error', 'network_error');
-  }
-  return handleResponse<void>(res);
+export function apiDelete(path: string, token?: string, body?: unknown): Promise<void> {
+  return request<void>(path, { method: 'DELETE', token, json: body });
 }
 
-// ─── Multipart upload ───────────────────────────────────────────────────────────
-// Separate from apiPost: a JSON Content-Type header would break the multipart
-// boundary fetch sets automatically, so this path never calls buildHeaders(true).
-export async function apiUpload<T>(path: string, form: FormData, token?: string): Promise<T> {
-  const url = apiUrl(path);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: buildHeaders(token, false),
-      body: form,
-    });
-  } catch {
-    throw new ApiError(0, 'network_error', 'network_error');
-  }
-  return handleResponse<T>(res);
+// Multipart upload: fetch sets the multipart boundary Content-Type itself, so
+// `form` is passed through and buildHeaders skips the JSON content type.
+export function apiUpload<T>(path: string, form: FormData, token?: string): Promise<T> {
+  return request<T>(path, { method: 'POST', token, form });
 }
 
 // ─── List unwrapper ─────────────────────────────────────────────────────────────
